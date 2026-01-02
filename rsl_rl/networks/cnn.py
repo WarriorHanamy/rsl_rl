@@ -33,6 +33,7 @@ class CNN(nn.Sequential):
         max_pool: bool | tuple[bool] | list[bool] = False,
         global_pool: str = "none",
         flatten: bool = True,
+        bias: bool = False,
     ) -> None:
         """Initialize the CNN.
 
@@ -82,6 +83,7 @@ class CNN(nn.Sequential):
                     padding=p,
                     dilation=d,
                     padding_mode=padding if padding in ["zeros", "reflect", "replicate", "circular"] else "zeros",
+                    bias=bias,
                 )
             )
 
@@ -151,7 +153,8 @@ class CNN(nn.Sequential):
         for idx, module in enumerate(self):
             if isinstance(module, nn.Conv2d):
                 torch.nn.init.kaiming_normal_(module.weight)
-                torch.nn.init.zeros_(module.bias)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the CNN."""

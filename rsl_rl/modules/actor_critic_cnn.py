@@ -74,10 +74,11 @@ class ActorCriticCNN(ActorCritic):
             else:
                 raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
 
-        # Assert that there are 2D observations
-        assert self.actor_obs_groups_2d or self.critic_obs_groups_2d, (
-            "No 2D observations are provided. If this is intentional, use the ActorCritic module instead."
-        )
+        # Rec: to support 1D-only observations, we do not enforce the presence of 2D obs
+        # # Assert that there are 2D observations
+        # assert self.actor_obs_groups_2d or self.critic_obs_groups_2d, (
+        #     "No 2D observations are provided. If this is intentional, use the ActorCritic module instead."
+        # )
 
         # Actor CNN
         if self.actor_obs_groups_2d:

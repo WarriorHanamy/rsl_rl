@@ -8,11 +8,13 @@
 from .cnn import CNN
 from .memory import HiddenState, Memory
 from .mlp import MLP
+from .depth_mlp_mixer import DepthMLPMixer
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 
 __all__ = [
     "CNN",
     "MLP",
+    "DepthMLPMixer",
     "EmpiricalDiscountedVariationNormalization",
     "EmpiricalNormalization",
     "HiddenState",
