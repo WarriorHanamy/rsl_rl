@@ -38,6 +38,8 @@ class Logger:
         self.git_status_repos = [rsl_rl.__file__]
         self.tot_timesteps = 0
         self.tot_time = 0
+        # Store experiment name for display
+        self.experiment_name = cfg.get("experiment_name", "N/A")
 
         # Create buffers
         self.ep_extras = []
@@ -181,6 +183,9 @@ class Logger:
             # Print to console
             log_string = f"""{"#" * width}\n"""
             log_string += f"""\033[1m{f" Learning iteration {it}/{total_it} ".center(width)}\033[0m \n\n"""
+
+            # Print experiment name
+            log_string += f"""{"Experiment:":>{pad}} {self.experiment_name}\n"""
 
             # Print run name if provided
             run_name = self.cfg.get("run_name")

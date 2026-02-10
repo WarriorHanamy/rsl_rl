@@ -32,6 +32,8 @@ class ActorCriticCNN(ActorCritic):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         state_dependent_std: bool = False,
+        use_feature_fusion: bool = False,
+        dim_hidden_input: int = 128,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -40,6 +42,10 @@ class ActorCriticCNN(ActorCritic):
                 + str([key for key in kwargs])
             )
         super(ActorCritic, self).__init__()
+
+        # Store feature fusion configuration
+        self.use_feature_fusion = use_feature_fusion
+        self.dim_hidden_input = dim_hidden_input
 
         # Get the observation dimensions
         self.obs_groups = obs_groups
@@ -107,16 +113,40 @@ class ActorCriticCNN(ActorCritic):
                     encoding_dim += int(self.actor_cnns[obs_group].output_dim)
                 else:
                     raise ValueError("The output of the actor CNN must be flattened before passing it to the MLP.")
+            
+            # Add MLP projection layer if using feature fusion (MasterRacing style)
+            if self.use_feature_fusion:
+                # Project CNN output (e.g., 1280) to dim_hidden_input (e.g., 128)
+                self.actor_cnn_projection = nn.ModuleDict()
+                for obs_group in self.actor_obs_groups_2d:
+                    cnn_out_dim = int(self.actor_cnns[obs_group].output_dim)
+                    self.actor_cnn_projection[obs_group] = nn.Linear(cnn_out_dim, self.dim_hidden_input)
+                print(f"Actor CNN Projection: {cnn_out_dim} -> {self.dim_hidden_input}")
         else:
             self.actor_cnns = None
             encoding_dim = 0
 
         # Actor MLP
         self.state_dependent_std = state_dependent_std
-        if self.state_dependent_std:
-            self.actor = MLP(num_actor_obs_1d + encoding_dim, [2, num_actions], actor_hidden_dims, activation)
+        if self.use_feature_fusion:
+            # MasterRacing style: separate state encoder + feature fusion
+            # State encoder: direct linear projection (no activation, matching MasterRacing)
+            if num_actor_obs_1d > 0:
+                self.actor_state_encoder = nn.Linear(num_actor_obs_1d, self.dim_hidden_input)
+                print(f"Actor State Encoder: Linear({num_actor_obs_1d} -> {self.dim_hidden_input})")
+            else:
+                self.actor_state_encoder = None
+            # MLP takes fused features (dim_hidden_input)
+            if self.state_dependent_std:
+                self.actor = MLP(self.dim_hidden_input, [2, num_actions], actor_hidden_dims, activation)
+            else:
+                self.actor = MLP(self.dim_hidden_input, num_actions, actor_hidden_dims, activation)
         else:
-            self.actor = MLP(num_actor_obs_1d + encoding_dim, num_actions, actor_hidden_dims, activation)
+            # Original concatenation style
+            if self.state_dependent_std:
+                self.actor = MLP(num_actor_obs_1d + encoding_dim, [2, num_actions], actor_hidden_dims, activation)
+            else:
+                self.actor = MLP(num_actor_obs_1d + encoding_dim, num_actions, actor_hidden_dims, activation)
         print(f"Actor MLP: {self.actor}")
 
         # Actor observation normalization (only for 1D actor observations)
@@ -153,12 +183,33 @@ class ActorCriticCNN(ActorCritic):
                     encoding_dim += int(self.critic_cnns[obs_group].output_dim)
                 else:
                     raise ValueError("The output of the critic CNN must be flattened before passing it to the MLP.")
+            
+            # Add MLP projection layer if using feature fusion (MasterRacing style)
+            if self.use_feature_fusion:
+                # Project CNN output (e.g., 1280) to dim_hidden_input (e.g., 128)
+                self.critic_cnn_projection = nn.ModuleDict()
+                for obs_group in self.critic_obs_groups_2d:
+                    cnn_out_dim = int(self.critic_cnns[obs_group].output_dim)
+                    self.critic_cnn_projection[obs_group] = nn.Linear(cnn_out_dim, self.dim_hidden_input)
+                print(f"Critic CNN Projection: {cnn_out_dim} -> {self.dim_hidden_input}")
         else:
             self.critic_cnns = None
             encoding_dim = 0
 
         # Critic MLP
-        self.critic = MLP(num_critic_obs_1d + encoding_dim, 1, critic_hidden_dims, activation)
+        if self.use_feature_fusion:
+            # MasterRacing style: separate state encoder + feature fusion
+            # State encoder: direct linear projection (no activation, matching MasterRacing)
+            if num_critic_obs_1d > 0:
+                self.critic_state_encoder = nn.Linear(num_critic_obs_1d, self.dim_hidden_input)
+                print(f"Critic State Encoder: Linear({num_critic_obs_1d} -> {self.dim_hidden_input})")
+            else:
+                self.critic_state_encoder = None
+            # MLP takes fused features (dim_hidden_input)
+            self.critic = MLP(self.dim_hidden_input, 1, critic_hidden_dims, activation)
+        else:
+            # Original concatenation style
+            self.critic = MLP(num_critic_obs_1d + encoding_dim, 1, critic_hidden_dims, activation)
         print(f"Critic MLP: {self.critic}")
 
         # Critic observation normalization (only for 1D critic observations)
@@ -196,14 +247,39 @@ class ActorCriticCNN(ActorCritic):
         Normal.set_default_validate_args(False)
 
     def _update_distribution(self, mlp_obs: torch.Tensor, cnn_obs: dict[str, torch.Tensor]) -> None:
-        if self.actor_cnns is not None:
-            # Encode the 2D actor observations
-            cnn_enc_list = [self.actor_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.actor_obs_groups_2d]
-            cnn_enc = torch.cat(cnn_enc_list, dim=-1)
-            # Concatenate to the MLP observations
-            mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
+        if self.use_feature_fusion:
+            # MasterRacing style: feature fusion (addition)
+            # Encode CNN features
+            if self.actor_cnns is not None:
+                cnn_enc_list = []
+                for obs_group in self.actor_obs_groups_2d:
+                    cnn_feat = self.actor_cnns[obs_group](cnn_obs[obs_group])
+                    # Apply projection layer: 1280 -> 128
+                    cnn_feat = self.actor_cnn_projection[obs_group](cnn_feat)
+                    cnn_enc_list.append(cnn_feat)
+                cnn_enc = torch.cat(cnn_enc_list, dim=-1) if len(cnn_enc_list) > 1 else cnn_enc_list[0]
+            else:
+                cnn_enc = torch.zeros((mlp_obs.shape[0], self.dim_hidden_input), device=mlp_obs.device)
+            
+            # Encode state features
+            if self.actor_state_encoder is not None and mlp_obs.shape[-1] > 0:
+                state_enc = self.actor_state_encoder(mlp_obs)
+            else:
+                state_enc = torch.zeros((mlp_obs.shape[0], self.dim_hidden_input), device=mlp_obs.device)
+            
+            # Feature fusion: element-wise addition
+            fused_features = cnn_enc + state_enc
+            super()._update_distribution(fused_features)
+        else:
+            # Original concatenation style
+            if self.actor_cnns is not None:
+                # Encode the 2D actor observations
+                cnn_enc_list = [self.actor_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.actor_obs_groups_2d]
+                cnn_enc = torch.cat(cnn_enc_list, dim=-1)
+                # Concatenate to the MLP observations
+                mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
 
-        super()._update_distribution(mlp_obs)
+            super()._update_distribution(mlp_obs)
 
     def act(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
@@ -215,12 +291,36 @@ class ActorCriticCNN(ActorCritic):
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
         mlp_obs = self.actor_obs_normalizer(mlp_obs)
 
-        if self.actor_cnns is not None:
-            # Encode the 2D actor observations
-            cnn_enc_list = [self.actor_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.actor_obs_groups_2d]
-            cnn_enc = torch.cat(cnn_enc_list, dim=-1)
-            # Concatenate to the MLP observations
-            mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
+        if self.use_feature_fusion:
+            # MasterRacing style: feature fusion (addition)
+            # Encode CNN features
+            if self.actor_cnns is not None:
+                cnn_enc_list = []
+                for obs_group in self.actor_obs_groups_2d:
+                    cnn_feat = self.actor_cnns[obs_group](cnn_obs[obs_group])
+                    # Apply projection layer: 1280 -> 128
+                    cnn_feat = self.actor_cnn_projection[obs_group](cnn_feat)
+                    cnn_enc_list.append(cnn_feat)
+                cnn_enc = torch.cat(cnn_enc_list, dim=-1) if len(cnn_enc_list) > 1 else cnn_enc_list[0]
+            else:
+                cnn_enc = torch.zeros((mlp_obs.shape[0], self.dim_hidden_input), device=mlp_obs.device)
+            
+            # Encode state features
+            if self.actor_state_encoder is not None and mlp_obs.shape[-1] > 0:
+                state_enc = self.actor_state_encoder(mlp_obs)
+            else:
+                state_enc = torch.zeros((mlp_obs.shape[0], self.dim_hidden_input), device=mlp_obs.device)
+            
+            # Feature fusion: element-wise addition
+            mlp_obs = cnn_enc + state_enc
+        else:
+            # Original concatenation style
+            if self.actor_cnns is not None:
+                # Encode the 2D actor observations
+                cnn_enc_list = [self.actor_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.actor_obs_groups_2d]
+                cnn_enc = torch.cat(cnn_enc_list, dim=-1)
+                # Concatenate to the MLP observations
+                mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
 
         if self.state_dependent_std:
             return self.actor(mlp_obs)[..., 0, :]
@@ -231,12 +331,36 @@ class ActorCriticCNN(ActorCritic):
         mlp_obs, cnn_obs = self.get_critic_obs(obs)
         mlp_obs = self.critic_obs_normalizer(mlp_obs)
 
-        if self.critic_cnns is not None:
-            # Encode the 2D critic observations
-            cnn_enc_list = [self.critic_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.critic_obs_groups_2d]
-            cnn_enc = torch.cat(cnn_enc_list, dim=-1)
-            # Concatenate to the MLP observations
-            mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
+        if self.use_feature_fusion:
+            # MasterRacing style: feature fusion (addition)
+            # Encode CNN features
+            if self.critic_cnns is not None:
+                cnn_enc_list = []
+                for obs_group in self.critic_obs_groups_2d:
+                    cnn_feat = self.critic_cnns[obs_group](cnn_obs[obs_group])
+                    # Apply projection layer: 1280 -> 128
+                    cnn_feat = self.critic_cnn_projection[obs_group](cnn_feat)
+                    cnn_enc_list.append(cnn_feat)
+                cnn_enc = torch.cat(cnn_enc_list, dim=-1) if len(cnn_enc_list) > 1 else cnn_enc_list[0]
+            else:
+                cnn_enc = torch.zeros((mlp_obs.shape[0], self.dim_hidden_input), device=mlp_obs.device)
+            
+            # Encode state features
+            if self.critic_state_encoder is not None and mlp_obs.shape[-1] > 0:
+                state_enc = self.critic_state_encoder(mlp_obs)
+            else:
+                state_enc = torch.zeros((mlp_obs.shape[0], self.dim_hidden_input), device=mlp_obs.device)
+            
+            # Feature fusion: element-wise addition
+            mlp_obs = cnn_enc + state_enc
+        else:
+            # Original concatenation style
+            if self.critic_cnns is not None:
+                # Encode the 2D critic observations
+                cnn_enc_list = [self.critic_cnns[obs_group](cnn_obs[obs_group]) for obs_group in self.critic_obs_groups_2d]
+                cnn_enc = torch.cat(cnn_enc_list, dim=-1)
+                # Concatenate to the MLP observations
+                mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
 
         return self.critic(mlp_obs)
 
