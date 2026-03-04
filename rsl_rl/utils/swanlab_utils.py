@@ -21,6 +21,9 @@ class SwanlabSummaryWriter(SummaryWriter):
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
         super().__init__(log_dir, flush_secs)
 
+        self._supports_save = hasattr(swanlab, "save") and callable(swanlab.save)
+        self._save_warning_emitted = False
+
         run_name = os.path.split(log_dir)[-1]
 
         try:
@@ -70,7 +73,19 @@ class SwanlabSummaryWriter(SummaryWriter):
         swanlab.finish()
 
     def save_model(self, model_path: str, it: int) -> None:
-        swanlab.save(model_path, base_path=os.path.dirname(model_path))
+        self._save_to_swanlab(model_path)
 
     def save_file(self, path: str) -> None:
-        swanlab.save(path, base_path=os.path.dirname(path))
+        self._save_to_swanlab(path)
+
+    def _save_to_swanlab(self, path: str) -> None:
+        if self._supports_save:
+            swanlab.save(path, base_path=os.path.dirname(path))
+            return
+
+        if not self._save_warning_emitted:
+            self._save_warning_emitted = True
+            print(
+                "[SwanLab] swanlab.save is unavailable in the installed swanlab package; "
+                "skipping file upload. Please upgrade swanlab to a version that supports save()."
+            )
