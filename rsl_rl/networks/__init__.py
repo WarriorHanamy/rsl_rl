@@ -10,7 +10,6 @@ from .memory import HiddenState, Memory
 from .mlp import MLP
 from .depth_mlp_mixer import DepthMLPMixer
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
-from .recurrent_cnn import RecurrentCNN
 
 __all__ = [
     "CNN",
@@ -20,5 +19,4 @@ __all__ = [
     "EmpiricalNormalization",
     "HiddenState",
     "Memory",
-    "RecurrentCNN",
 ]

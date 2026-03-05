@@ -63,6 +63,7 @@ class ActorCriticRecurrent(nn.Module):
 
         # Actor
         self.state_dependent_std = state_dependent_std
+        # rec: mark, this Memory object is meomory network, it is not a good name.
         self.memory_a = Memory(num_actor_obs, rnn_hidden_dim, rnn_num_layers, rnn_type)
         if self.state_dependent_std:
             self.actor = MLP(rnn_hidden_dim, [2, num_actions], actor_hidden_dims, activation)

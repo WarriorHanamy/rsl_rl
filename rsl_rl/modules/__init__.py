@@ -7,6 +7,7 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_cnn import ActorCriticCNN
+from .actor_critic_cnn_recurrent import ActorCriticCNNRecurrent
 from .actor_critic_depth_mlp_mixer import ActorCriticDepthMLPMixer
 from .actor_critic_recurrent import ActorCriticRecurrent
 from .rnd import RandomNetworkDistillation, resolve_rnd_config
@@ -17,6 +18,7 @@ from .symmetry import resolve_symmetry_config
 __all__ = [
     "ActorCritic",
     "ActorCriticCNN",
+    "ActorCriticCNNRecurrent",
     "ActorCriticDepthMLPMixer",
     "ActorCriticRecurrent",
     "RandomNetworkDistillation",
