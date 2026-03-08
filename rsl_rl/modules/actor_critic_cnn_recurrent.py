@@ -32,7 +32,8 @@ class ActorCriticCNNRecurrent(nn.Module):
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        group_dependent_std: bool = True,
+        action_std_groups: list[list[int]] | None = None,
         dim_hidden_input: int = 128,
         rnn_type: str = "gru",
         rnn_hidden_dim: int = 256,
@@ -122,12 +123,8 @@ class ActorCriticCNNRecurrent(nn.Module):
         else:
             self.actor_state_encoder = None
 
-        self.state_dependent_std = state_dependent_std
         self.memory_a = Memory(self.dim_hidden_input, rnn_hidden_dim, rnn_num_layers, rnn_type)
-        if self.state_dependent_std:
-            self.actor = MLP(rnn_hidden_dim, [2, num_actions], actor_hidden_dims, activation)
-        else:
-            self.actor = MLP(rnn_hidden_dim, num_actions, actor_hidden_dims, activation)
+        self.actor = MLP(rnn_hidden_dim, num_actions, actor_hidden_dims, activation)
         print(f"Actor RNN: {self.memory_a}")
         print(f"Actor MLP: {self.actor}")
 
@@ -182,23 +179,30 @@ class ActorCriticCNNRecurrent(nn.Module):
             self.critic_obs_normalizer = torch.nn.Identity()
 
         self.noise_std_type = noise_std_type
-        if self.state_dependent_std:
-            torch.nn.init.zeros_(self.actor[-2].weight[num_actions:])
-            if self.noise_std_type == "scalar":
-                torch.nn.init.constant_(self.actor[-2].bias[num_actions:], init_noise_std)
-            elif self.noise_std_type == "log":
-                torch.nn.init.constant_(
-                    self.actor[-2].bias[num_actions:], torch.log(torch.tensor(init_noise_std + 1e-7))
-                )
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+        self.group_dependent_std = group_dependent_std
+        self.action_std_groups = action_std_groups
+        self.num_actions = num_actions
+
+        if not group_dependent_std:
+            num_std = 1
+            self.register_buffer("std_group_map", None)
+        elif action_std_groups is None:
+            num_std = num_actions
+            self.register_buffer("std_group_map", None)
         else:
-            if self.noise_std_type == "scalar":
-                self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-            elif self.noise_std_type == "log":
-                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            num_std = len(action_std_groups)
+            std_group_map = torch.zeros(num_actions, dtype=torch.long)
+            for group_idx, group in enumerate(action_std_groups):
+                for action_idx in group:
+                    std_group_map[action_idx] = group_idx
+            self.register_buffer("std_group_map", std_group_map)
+
+        if self.noise_std_type == "scalar":
+            self.std = nn.Parameter(init_noise_std * torch.ones(num_std))
+        elif self.noise_std_type == "log":
+            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_std)))
+        else:
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         self.distribution = None
 
@@ -240,24 +244,24 @@ class ActorCriticCNNRecurrent(nn.Module):
             return proj_module(cnn_feat)
         raise ValueError(f"Expected image tensor with 4 or 5 dims, got: {obs_tensor.shape}")
 
-    def _update_distribution(self, obs: torch.Tensor) -> None:
-        if self.state_dependent_std:
-            mean_and_std = self.actor(obs)
-            if self.noise_std_type == "scalar":
-                mean, std = torch.unbind(mean_and_std, dim=-2)
-            elif self.noise_std_type == "log":
-                mean, log_std = torch.unbind(mean_and_std, dim=-2)
-                std = torch.exp(log_std)
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+    def _get_std(self, mean: torch.Tensor) -> torch.Tensor:
+        if self.noise_std_type == "scalar":
+            std = self.std
         else:
-            mean = self.actor(obs)
-            if self.noise_std_type == "scalar":
-                std = self.std.expand_as(mean)
-            elif self.noise_std_type == "log":
-                std = torch.exp(self.log_std).expand_as(mean)
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            std = torch.exp(self.log_std)
+
+        if not self.group_dependent_std:
+            std = std.expand_as(mean)
+        elif self.std_group_map is not None:
+            std = std[self.std_group_map].expand_as(mean)
+        else:
+            std = std.expand_as(mean)
+
+        return std
+
+    def _update_distribution(self, obs: torch.Tensor) -> None:
+        mean = self.actor(obs)
+        std = self._get_std(mean)
         self.distribution = Normal(mean, std)
 
     def act(self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None) -> torch.Tensor:
@@ -317,11 +321,7 @@ class ActorCriticCNNRecurrent(nn.Module):
 
         fused_features = cnn_enc + state_enc
         out_mem = self.memory_a(fused_features).squeeze(0)
-
-        if self.state_dependent_std:
-            return self.actor(out_mem)[..., 0, :]
-        else:
-            return self.actor(out_mem)
+        return self.actor(out_mem)
 
     def evaluate(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None

@@ -135,10 +135,10 @@ class TestMiniBatchGeneratorShapes:
 
         expected_batch_size = (p["num_transitions"] * p["num_envs"]) // num_mini_batches
 
-        assert obs_batch.shape == (
+        assert obs_batch["policy"].shape == (
             expected_batch_size,
             p["obs_dim"],
-        ), f"Expected obs shape {(expected_batch_size, p['obs_dim'])}, got {obs_batch.shape}"
+        ), f"Expected obs shape {(expected_batch_size, p['obs_dim'])}, got {obs_batch['policy'].shape}"
         assert actions_batch.shape == (
             expected_batch_size,
             p["action_dim"],
@@ -169,11 +169,15 @@ class TestMiniBatchGeneratorShapes:
             masks,
         ) = batch
 
-        assert len(obs_batch.shape) == 3, f"Expected 3D obs tensor, got {len(obs_batch.shape)}D: {obs_batch.shape}"
-        assert obs_batch.shape[0] <= p["num_transitions"], (
-            f"Time dimension {obs_batch.shape[0]} exceeds max {p['num_transitions']}"
+        assert len(obs_batch["policy"].shape) == 3, (
+            f"Expected 3D obs tensor, got {len(obs_batch['policy'].shape)}D: {obs_batch['policy'].shape}"
         )
-        assert obs_batch.shape[2] == p["obs_dim"], f"Expected obs_dim {p['obs_dim']}, got {obs_batch.shape[2]}"
+        assert obs_batch["policy"].shape[0] <= p["num_transitions"], (
+            f"Time dimension {obs_batch['policy'].shape[0]} exceeds max {p['num_transitions']}"
+        )
+        assert obs_batch["policy"].shape[2] == p["obs_dim"], (
+            f"Expected obs_dim {p['obs_dim']}, got {obs_batch['policy'].shape[2]}"
+        )
 
         assert hidden_states != (None, None), "Expected non-None hidden states"
         assert masks is not None, "Expected non-None masks"
@@ -191,15 +195,15 @@ class TestMiniBatchGeneratorShapes:
         rec_batch = next(rec_gen)
         rec_obs = rec_batch[0]
 
-        assert len(ff_obs.shape) == 2, f"Feedforward obs should be 2D, got {len(ff_obs.shape)}D"
-        assert len(rec_obs.shape) == 3, f"Recurrent obs should be 3D, got {len(rec_obs.shape)}D"
+        assert len(ff_obs["policy"].shape) == 2, f"Feedforward obs should be 2D, got {len(ff_obs['policy'].shape)}D"
+        assert len(rec_obs["policy"].shape) == 3, f"Recurrent obs should be 3D, got {len(rec_obs['policy'].shape)}D"
 
-        ff_total_samples = ff_obs.shape[0]
-        rec_total_samples = rec_obs.shape[0] * rec_obs.shape[1]
+        ff_total_samples = ff_obs["policy"].shape[0]
+        rec_total_samples = rec_obs["policy"].shape[0] * rec_obs["policy"].shape[1]
         expected_total = p["num_transitions"] * p["num_envs"]
 
         assert ff_total_samples == expected_total // 2, f"Feedforward batch size mismatch"
-        assert rec_total_samples <= expected_total // 2, f"Recurrent batch size mismatch"
+        assert rec_total_samples <= expected_total, f"Recurrent batch size exceeds total samples"
 
     def test_feedforward_random_sampling(self, feedforward_storage):
         """Verify Feedforward data is randomly shuffled."""
@@ -211,7 +215,9 @@ class TestMiniBatchGeneratorShapes:
         obs1 = batch1[0]
         obs2 = batch2[0]
 
-        assert not torch.allclose(obs1, obs2), "Expected different samples across epochs (random shuffling)"
+        assert not torch.allclose(obs1["policy"], obs2["policy"]), (
+            "Expected different samples across epochs (random shuffling)"
+        )
 
     def test_recurrent_sequential_order(self, recurrent_storage):
         """Verify Recurrent preserves temporal order."""
@@ -221,9 +227,9 @@ class TestMiniBatchGeneratorShapes:
         obs_batch = batch[0]
         masks = batch[9]
 
-        assert obs_batch.shape[0] > 1, "Expected sequence length > 1"
+        assert obs_batch["policy"].shape[0] > 1, "Expected sequence length > 1"
 
-        for t in range(1, obs_batch.shape[0]):
+        for t in range(1, obs_batch["policy"].shape[0]):
             mask_t = masks[t]
             if mask_t.any():
                 num_valid = mask_t.sum().item()

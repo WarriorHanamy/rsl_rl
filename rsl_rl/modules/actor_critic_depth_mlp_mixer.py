@@ -26,50 +26,44 @@ class ActorCriticDepthMLPMixer(ActorCritic):
         critic_obs_normalization: bool = False,
         actor_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
         critic_hidden_dims: tuple[int] | list[int] = [256, 256, 256],
-        # 这里接收 mixer 的配置，例如 pool_kernel, patch_size, hidden_dim 等
         actor_mixer_cfg: dict[str, dict] | dict | None = None,
         critic_mixer_cfg: dict[str, dict] | dict | None = None,
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
-        state_dependent_std: bool = False,
+        group_dependent_std: bool = True,
+        action_std_groups: list[list[int]] | None = None,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
-            print(
-                "ActorCriticDepthMLPMixer.__init__ got unexpected arguments: "
-                + str([key for key in kwargs])
-            )
-        
-        # 调用父类的父类构造函数 (ActorCritic 的基类通常是 nn.Module)
+            print("ActorCriticDepthMLPMixer.__init__ got unexpected arguments: " + str([key for key in kwargs]))
+
         super(ActorCritic, self).__init__()
 
         self.obs_groups = obs_groups
-        
-        # --- 解析 Actor 观测维度 ---
+
         num_actor_obs_1d = 0
         self.actor_obs_groups_1d = []
         actor_in_dims_2d = []
         actor_in_channels_2d = []
         self.actor_obs_groups_2d = []
-        
+
         for obs_group in obs_groups["policy"]:
             shape = obs[obs_group].shape
-            if len(shape) == 4:  # [B, C, H, W]
+            if len(shape) == 4:
                 self.actor_obs_groups_2d.append(obs_group)
-                actor_in_dims_2d.append(shape[2:4]) # (H, W)
+                actor_in_dims_2d.append(shape[2:4])
                 actor_in_channels_2d.append(shape[1])
-            elif len(shape) == 2:  # [B, D]
+            elif len(shape) == 2:
                 self.actor_obs_groups_1d.append(obs_group)
                 num_actor_obs_1d += shape[-1]
 
-        # --- 解析 Critic 观测维度 ---
         num_critic_obs_1d = 0
         self.critic_obs_groups_1d = []
         critic_in_dims_2d = []
         critic_in_channels_2d = []
         self.critic_obs_groups_2d = []
-        
+
         for obs_group in obs_groups["critic"]:
             shape = obs[obs_group].shape
             if len(shape) == 4:
@@ -80,7 +74,6 @@ class ActorCriticDepthMLPMixer(ActorCritic):
                 self.critic_obs_groups_1d.append(obs_group)
                 num_critic_obs_1d += shape[-1]
 
-        # --- 实例化 Actor DepthMLPMixers ---
         self.actor_mixers = nn.ModuleDict()
         actor_encoding_dim = 0
         if self.actor_obs_groups_2d:
@@ -92,13 +85,14 @@ class ActorCriticDepthMLPMixer(ActorCritic):
                 self.actor_mixers[obs_group] = DepthMLPMixer(
                     in_channels=actor_in_channels_2d[idx],
                     image_size=actor_in_dims_2d[idx],
-                    **actor_mixer_cfg[obs_group]
+                    **actor_mixer_cfg[obs_group],
                 )
 
-                assert actor_mixer_cfg is not None and actor_mixer_cfg[obs_group]['flatten'], "Actor mixer must have flatten=True to compute encoding dim."
+                assert actor_mixer_cfg is not None and actor_mixer_cfg[obs_group]["flatten"], (
+                    "Actor mixer must have flatten=True to compute encoding dim."
+                )
                 actor_encoding_dim += self.actor_mixers[obs_group].output_dim
 
-        # --- 实例化 Critic DepthMLPMixers ---
         self.critic_mixers = nn.ModuleDict()
         critic_encoding_dim = 0
         if self.critic_obs_groups_2d:
@@ -110,58 +104,91 @@ class ActorCriticDepthMLPMixer(ActorCritic):
                 self.critic_mixers[obs_group] = DepthMLPMixer(
                     in_channels=critic_in_channels_2d[idx],
                     image_size=critic_in_dims_2d[idx],
-                    **critic_mixer_cfg[obs_group]
+                    **critic_mixer_cfg[obs_group],
                 )
                 m_cfg = critic_mixer_cfg[obs_group]
-                h_eff = critic_in_dims_2d[idx][0] // m_cfg.get('pool_kernel', 2) // m_cfg.get('patch_size', 4)
-                w_eff = critic_in_dims_2d[idx][1] // m_cfg.get('pool_kernel', 2) // m_cfg.get('patch_size', 4)
+                h_eff = critic_in_dims_2d[idx][0] // m_cfg.get("pool_kernel", 2) // m_cfg.get("patch_size", 4)
+                w_eff = critic_in_dims_2d[idx][1] // m_cfg.get("pool_kernel", 2) // m_cfg.get("patch_size", 4)
                 num_tokens = h_eff * w_eff
-                critic_encoding_dim += num_tokens * m_cfg.get('hidden_dim', 128)
+                critic_encoding_dim += num_tokens * m_cfg.get("hidden_dim", 128)
 
-        # --- Actor/Critic MLP Heads ---
-        self.state_dependent_std = state_dependent_std
         actor_input_dim = num_actor_obs_1d + actor_encoding_dim
-        if self.state_dependent_std:
-            self.actor = MLP(actor_input_dim, [2, num_actions], actor_hidden_dims, activation)
-        else:
-            self.actor = MLP(actor_input_dim, num_actions, actor_hidden_dims, activation)
-        
+        self.actor = MLP(actor_input_dim, num_actions, actor_hidden_dims, activation)
+
         self.critic = MLP(num_critic_obs_1d + critic_encoding_dim, 1, critic_hidden_dims, activation)
 
-        # --- Normalization & Noise ---
         self.actor_obs_normalization = actor_obs_normalization
-        self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs_1d) if actor_obs_normalization else nn.Identity()
+        self.actor_obs_normalizer = (
+            EmpiricalNormalization(num_actor_obs_1d) if actor_obs_normalization else nn.Identity()
+        )
         self.critic_obs_normalization = critic_obs_normalization
-        self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs_1d) if critic_obs_normalization else nn.Identity()
+        self.critic_obs_normalizer = (
+            EmpiricalNormalization(num_critic_obs_1d) if critic_obs_normalization else nn.Identity()
+        )
 
         self.noise_std_type = noise_std_type
-        if not self.state_dependent_std:
-            if self.noise_std_type == "scalar":
-                self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-            else:
-                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+        self.group_dependent_std = group_dependent_std
+        self.action_std_groups = action_std_groups
+        self.num_actions = num_actions
+
+        if not group_dependent_std:
+            num_std = 1
+            self.register_buffer("std_group_map", None)
+        elif action_std_groups is None:
+            num_std = num_actions
+            self.register_buffer("std_group_map", None)
+        else:
+            num_std = len(action_std_groups)
+            std_group_map = torch.zeros(num_actions, dtype=torch.long)
+            for group_idx, group in enumerate(action_std_groups):
+                for action_idx in group:
+                    std_group_map[action_idx] = group_idx
+            self.register_buffer("std_group_map", std_group_map)
+
+        if self.noise_std_type == "scalar":
+            self.std = nn.Parameter(init_noise_std * torch.ones(num_std))
+        elif self.noise_std_type == "log":
+            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_std)))
+        else:
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         self.distribution = None
         Normal.set_default_validate_args(False)
+
+    def _get_std(self, mean: torch.Tensor) -> torch.Tensor:
+        if self.noise_std_type == "scalar":
+            std = self.std
+        else:
+            std = torch.exp(self.log_std)
+
+        if not self.group_dependent_std:
+            std = std.expand_as(mean)
+        elif self.std_group_map is not None:
+            std = std[self.std_group_map].expand_as(mean)
+        else:
+            std = std.expand_as(mean)
+
+        return std
 
     def _update_distribution(self, mlp_obs: torch.Tensor, cnn_obs: dict[str, torch.Tensor]) -> None:
         if self.actor_mixers:
             mixer_enc_list = []
             for obs_group in self.actor_obs_groups_2d:
-                # Mixer 返回 [B, S, C], 需要展平为 [B, S*C]
                 z = self.actor_mixers[obs_group](cnn_obs[obs_group])
-                mixer_enc_list.append(z.flatten(1)) 
-            
+                mixer_enc_list.append(z.flatten(1))
+
             mixer_enc = torch.cat(mixer_enc_list, dim=-1)
             mlp_obs = torch.cat([mlp_obs, mixer_enc], dim=-1)
 
-        super()._update_distribution(mlp_obs)
+        mean = self.actor(mlp_obs)
+        std = self._get_std(mean)
+        self.distribution = Normal(mean, std)
 
     def act(self, obs: TensorDict, **kwargs) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
         mlp_obs = self.actor_obs_normalizer(mlp_obs)
         self._update_distribution(mlp_obs, cnn_obs)
-        return self.distribution.sample() # type: ignore
+        return self.distribution.sample()
 
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
@@ -171,7 +198,7 @@ class ActorCriticDepthMLPMixer(ActorCritic):
             mixer_enc_list = [self.actor_mixers[g](cnn_obs[g]).flatten(1) for g in self.actor_obs_groups_2d]
             mlp_obs = torch.cat([mlp_obs, torch.cat(mixer_enc_list, dim=-1)], dim=-1)
 
-        return self.actor(mlp_obs)[..., 0, :] if self.state_dependent_std else self.actor(mlp_obs)
+        return self.actor(mlp_obs)
 
     def evaluate(self, obs: TensorDict, **kwargs) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_critic_obs(obs)
