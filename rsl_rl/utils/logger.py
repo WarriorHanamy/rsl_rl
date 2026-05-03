@@ -61,9 +61,9 @@ class Logger:
         self.disable_logs = is_distributed and gpu_global_rank != 0
 
     def init_logging_writer(self) -> None:
-        """Initialize the logging writer, which can be either Tensorboard, W&B or Neptune and save the code state.
+        """Initialize the logging writer, which can be Tensorboard, W&B, Neptune or SwanLab and save the code state.
 
-        If the writer is either W&B or Neptune, the configuration and code state are uploaded as well.
+        If the writer is W&B, Neptune or SwanLab, the configuration and code state are uploaded as well.
         """
         if self.log_dir is not None and not self.disable_logs:
             self.logger_type = self.cfg.get("logger", "tensorboard")
@@ -76,12 +76,18 @@ class Logger:
                 from rsl_rl.utils.wandb_utils import WandbSummaryWriter
 
                 self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+            elif self.logger_type == "swanlab":
+                from rsl_rl.utils.swanlab_utils import SwanlabSummaryWriter
+
+                self.writer = SwanlabSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
             elif self.logger_type == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
-                raise ValueError("Logger type not found. Please choose 'wandb', 'neptune', or 'tensorboard'.")
+                raise ValueError(
+                    "Logger type not found. Please choose 'wandb', 'neptune', 'swanlab', or 'tensorboard'."
+                )
         else:
             self.writer = None
 
@@ -89,7 +95,7 @@ class Logger:
         files_to_upload = self._store_code_state()
 
         # Upload configuration and code state to external logging service if applicable
-        if self.writer is not None and self.logger_type in ["wandb", "neptune"]:
+        if self.writer is not None and self.logger_type in ["wandb", "neptune", "swanlab"]:
             self.writer.store_config(self.env_cfg, self.cfg)  # type: ignore
             for path in files_to_upload:
                 self.writer.save_file(path)  # type: ignore
@@ -265,12 +271,12 @@ class Logger:
 
     def save_model(self, path: str, it: int) -> None:
         """Save the model to external logging services if specified."""
-        if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
+        if self.writer is not None and self.logger_type in ["neptune", "wandb", "swanlab"]:
             self.writer.save_model(path, it)  # type: ignore
 
     def stop_logging_writer(self) -> None:
         """Stop the logging writer."""
-        if self.writer is not None and self.logger_type in ["neptune", "wandb"]:
+        if self.writer is not None and self.logger_type in ["neptune", "wandb", "swanlab"]:
             self.writer.stop()  # type: ignore
 
     def _store_code_state(self) -> list[str]:
